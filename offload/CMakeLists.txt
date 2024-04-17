@@ -12,9 +12,9 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 
-if (OPENMP_STANDALONE_BUILD OR "${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
+if ("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
   set(OPENMP_STANDALONE_BUILD TRUE)
-  project(omptarget C CXX ASM)
+  project(offload C CXX ASM)
 endif()
 
 set(ENABLE_LIBOMPTARGET ON)
@@ -198,9 +198,57 @@ if (LIBOMPTARGET_USE_LTO)
   list(APPEND offload_link_flags ${CMAKE_CXX_COMPILE_OPTIONS_IPO})
 endif()
 
-# Set LIBOMP_HAVE_OMPT_SUPPORT and LIBOMP_HAVE_VERSION_SCRIPT_FLAG using common offload/openmp cmake module.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../openmp/runtime/cmake")
-include(OffloadOpenmpCommon)
+if(OPENMP_STANDALONE_BUILD)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    execute_process(
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      COMMAND ${CMAKE_CXX_COMPILER} --print-resource-dir
+      RESULT_VARIABLE COMMAND_RETURN_CODE
+      OUTPUT_VARIABLE COMPILER_RESOURCE_DIR
+    )
+  endif()
+
+  set(LIBOMP_HAVE_OMPT_SUPPORT FALSE)
+  set(LIBOMP_OMPT_SUPPORT FALSE)
+
+  find_path (
+    LIBOMP_OMP_TOOLS_INCLUDE_DIR
+    NAMES
+      omp-tools.h
+    HINTS
+    ${COMPILER_RESOURCE_DIR}/include
+    ${CMAKE_INSTALL_PREFIX}/include
+  )
+
+  if(LIBOMP_OMP_TOOLS_INCLUDE_DIR)
+    set(LIBOMP_HAVE_OMPT_SUPPORT TRUE)
+    set(LIBOMP_OMPT_SUPPORT TRUE)
+  endif()
+
+  # LLVM_LIBRARY_DIRS set by find_package(LLVM) in LibomptargetGetDependencies
+  find_library (
+    LIBOMP_STANDALONE
+    NAMES
+      omp
+    HINTS
+      ${CMAKE_INSTALL_PREFIX}/lib
+      ${LLVM_LIBRARY_DIRS}
+    REQUIRED
+  )
+# Check LIBOMP_HAVE_VERSION_SCRIPT_FLAG
+  include(LLVMCheckCompilerLinkerFlag)
+  if(NOT APPLE)
+    llvm_check_compiler_linker_flag(C "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/../openmp/runtime/src/exports_test_so.txt" LIBOMP_HAVE_VERSION_SCRIPT_FLAG)
+  endif()
+
+  macro(pythonize_bool var)
+  if (${var})
+    set(${var} True)
+  else()
+    set(${var} False)
+  endif()
+  endmacro()
+endif()
 
 # OMPT support for libomptarget
 # Follow host OMPT support and check if host support has been requested.
@@ -226,34 +274,12 @@ set(LIBOMPTARGET_GPU_LIBC_SUPPORT ${LLVM_LIBC_GPU_BUILD} CACHE BOOL
     "Libomptarget support for the GPU libc")
 pythonize_bool(LIBOMPTARGET_GPU_LIBC_SUPPORT)
 
-if(OPENMP_STANDALONE_BUILD)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    find_package(LLVM HINTS ${CMAKE_INSTALL_PREFIX})
-  endif()
-  find_path (
-    LIBOMP_OMP_TOOLS_INCLUDE_DIR
-    NAMES
-      omp-tools.h
-    HINTS
-    ${LLVM_INCLUDE_DIRS}
-    ${LLVM_INCLUDE_DIRS}/../lib/clang/${LLVM_VERSION_MAJOR}/include
-    ${CMAKE_INSTALL_PREFIX}/include
-    REQUIRED
-  )
-  find_library (
-    LIBOMP_STANDALONE
-    NAMES
-      omp
-    HINTS
-      ${LLVM_LIBRARY_DIRS}
-      ${CMAKE_INSTALL_PREFIX}/lib
-    REQUIRED
-  )
-endif()
-
 set(LIBOMPTARGET_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 message(STATUS "OpenMP tools dir in libomptarget: ${LIBOMP_OMP_TOOLS_INCLUDE_DIR}")
-include_directories(${LIBOMP_OMP_TOOLS_INCLUDE_DIR})
+
+if(LIBOMP_OMP_TOOLS_INCLUDE_DIR)
+  include_directories(${LIBOMP_OMP_TOOLS_INCLUDE_DIR})
+endif()
 
 set(LIBOMPTARGET_LLVM_LIBRARY_DIR "${LLVM_LIBRARY_DIR}" CACHE STRING
   "Path to folder containing llvm library libomptarget.so")
